@@ -250,7 +250,7 @@ public class MergeService {
      * appears in {@code missing_fields} for the reviewer, which is honest about the
      * ambiguity instead of guessing.
      */
-    static Optional<String> resolveFieldPath(
+    public static Optional<String> resolveFieldPath(
             String entry, Map<String, Map<String, AnnotatedField>> sections) {
 
         if (entry == null || entry.isBlank()) {

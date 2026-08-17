@@ -1,0 +1,28 @@
+{
+  "_comment": "CANDIDATE-CREATED EXAMPLE, not the official case_v2_followup_payload.json. That file is supplied at the start of the live session and has not been seen. This fixture was written to exercise every merge status at once: overridden, unchanged, new, new section, carried_forward, and missing_fields. See docs/DECISIONS.md D4.",
+  "case_id": "PV-2026-0451",
+  "case_classification": "significant",
+  "extracted_at": "2026-05-02T11:20:00Z",
+  "source_document": "follow_up_1_PV-2026-0451.pdf",
+  "missing_fields": ["patient.weight_kg"],
+  "sections": {
+    "patient": {
+      "age": { "value": "63", "confidence": 0.87, "source": "p.1 §2" },
+      "sex": { "value": "Male", "confidence": 0.99, "source": "p.1 §2" }
+    },
+    "suspect_drug": {
+      "drug_name": { "value": "Atorvastatin", "confidence": 0.97, "source": "p.2 §1" },
+      "dose": { "value": "40 mg", "confidence": 0.9, "source": "p.2 §1" },
+      "therapy_end_date": { "value": "2026-04-02", "confidence": 0.76, "source": "p.2 §2" }
+    },
+    "adverse_event": {
+      "outcome": { "value": "Not recovered", "confidence": 0.83, "source": "p.3 §1" },
+      "seriousness": { "value": "Serious", "confidence": 0.92, "source": "p.3 §1" },
+      "rechallenge": { "value": "Not done", "confidence": 0.68, "source": "p.3 §4" }
+    },
+    "medical_history": {
+      "condition": { "value": "Type 2 diabetes", "confidence": 0.84, "source": "p.4 §2" },
+      "concomitant_medication": { "value": "Metformin", "confidence": 0.79, "source": "p.4 §3" }
+    }
+  }
+}
