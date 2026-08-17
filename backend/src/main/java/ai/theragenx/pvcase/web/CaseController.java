@@ -2,6 +2,7 @@ package ai.theragenx.pvcase.web;
 
 import ai.theragenx.pvcase.domain.CaseView;
 import ai.theragenx.pvcase.merge.CasePayloadNormalizer;
+import ai.theragenx.pvcase.merge.CaseSnapshotValidator;
 import ai.theragenx.pvcase.merge.MergeService;
 import ai.theragenx.pvcase.merge.NormalizedCasePayload;
 import ai.theragenx.pvcase.store.CaseRepository;
@@ -40,10 +41,15 @@ public class CaseController {
 
     private final CaseRepository repository;
     private final MergeService mergeService;
+    private final CaseSnapshotValidator snapshotValidator;
 
-    public CaseController(CaseRepository repository, MergeService mergeService) {
+    public CaseController(
+            CaseRepository repository,
+            MergeService mergeService,
+            CaseSnapshotValidator snapshotValidator) {
         this.repository = repository;
         this.mergeService = mergeService;
+        this.snapshotValidator = snapshotValidator;
     }
 
     /** Most recent version of a case. 404 when unknown. */
@@ -57,9 +63,10 @@ public class CaseController {
      *
      * <p>Not in the brief's endpoint list, but {@code ops/backup.sh} is required
      * to "fetch all known cases", which is impossible when the only read path
-     * needs an id you already have to know. Summaries rather than full cases so
-     * the response stays small as case count grows; the backup script pages
-     * through and fetches each case in full.
+     * needs an id you already have to know. Summaries rather than full cases, so
+     * enumerating does not transfer every case body; the backup script iterates
+     * them and fetches each one in full. Deliberately unpaginated — that would be
+     * speculative at this scale.
      */
     @GetMapping
     public Map<String, Object> listCases() {
@@ -109,10 +116,10 @@ public class CaseController {
     public ResponseEntity<CaseView> restoreCase(
             @PathVariable String caseId, @RequestBody CaseView snapshot) {
 
-        if (snapshot == null || snapshot.sections() == null) {
-            throw new InvalidPayloadException("sections", "is required to restore a case");
-        }
-        requireMatchingCaseId(caseId, snapshot.caseId());
+        requireMatchingCaseId(caseId, snapshot == null ? null : snapshot.caseId());
+        // Restore bypasses the follow-up normaliser entirely, so this is the only
+        // thing standing between a hand-edited backup file and corrupt storage.
+        snapshotValidator.validate(snapshot);
 
         boolean existed = repository.exists(caseId);
         CaseView restored = repository.replace(

@@ -105,10 +105,4 @@ public class CaseRepository {
         versionsByCase.put(snapshot.caseId(), List.of(snapshot));
         return snapshot;
     }
-
-    /** Version count for a case; used by tests and the restore no-op check. */
-    public int versionCount(String caseId) {
-        List<CaseView> versions = versionsByCase.get(caseId);
-        return versions == null ? 0 : versions.size();
-    }
 }

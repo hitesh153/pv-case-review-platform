@@ -126,10 +126,14 @@ public class MergeService {
                 followUp.classificationPresent()
                         ? followUp.caseClassification()
                         : previous.caseClassification(),
-                followUp.extractedAt() != null ? followUp.extractedAt() : previous.extractedAt(),
-                followUp.sourceDocument() != null
-                        ? followUp.sourceDocument()
-                        : previous.sourceDocument(),
+                // Not inherited, for the same reason field-level provenance is not:
+                // these describe which document this version was extracted from and
+                // when. Carrying v1's forward would have v2 claiming it came from the
+                // initial report PDF at the initial timestamp, which is a statement
+                // about provenance that nobody made. Null means "this follow-up did
+                // not say"; the previous version still records its own.
+                followUp.extractedAt(),
+                followUp.sourceDocument(),
                 // missing_fields describes the latest extraction only. Unioning it with
                 // previous versions would leave stale warnings on fields a later
                 // document successfully read.
@@ -157,15 +161,23 @@ public class MergeService {
         }
 
         if (sameClinicalValue(prior.value(), incoming.value())) {
-            // The value is corroborated. Take the fresher confidence and source where
-            // supplied, but keep the old provenance rather than blanking it if the
-            // follow-up sent a bare scalar.
+            // The value is corroborated, so the follow-up's provenance replaces the
+            // prior one wholesale — as a tuple, nulls included.
+            //
+            // Taking the new confidence but falling back to the old source would
+            // synthesise a (confidence, source) pair that no single extraction ever
+            // produced: "0.55, p.2 §1" when the follow-up said 0.55 with no page
+            // reference and the previous run said 0.91 at p.2 §1. That reads to a
+            // reviewer as one coherent extraction and is not. Provenance travels
+            // with the extraction that reported it; if this follow-up restated the
+            // value without saying where from, the honest answer is that we do not
+            // know, and the UI renders it unscored.
             return new AnnotatedField(
                     path,
                     label,
                     prior.value(),
-                    incoming.confidence() != null ? incoming.confidence() : prior.confidence(),
-                    incoming.source() != null ? incoming.source() : prior.source(),
+                    incoming.confidence(),
+                    incoming.source(),
                     FieldStatus.UNCHANGED,
                     null,
                     false);
@@ -192,6 +204,13 @@ public class MergeService {
     private boolean sameClinicalValue(JsonNode prior, JsonNode incoming) {
         if (prior == null || incoming == null) {
             return prior == incoming;
+        }
+        // Both numeric: compare numerically, so 1 and 1.0 are one value rather than
+        // a conflict manufactured by JSON formatting. Text comparison alone gets
+        // this wrong in both directions — "0.5" vs 0.50 happens to match while
+        // "0.50" vs 0.50 does not.
+        if (prior.isNumber() && incoming.isNumber()) {
+            return prior.decimalValue().compareTo(incoming.decimalValue()) == 0;
         }
         if (prior.isValueNode() && incoming.isValueNode()) {
             return prior.asText().trim().equals(incoming.asText().trim());

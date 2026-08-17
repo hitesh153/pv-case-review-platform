@@ -105,9 +105,15 @@ curl -sS http://localhost:8080/health | jq
 
 Reports `"degraded"` — still HTTP 200 — when the service is running but holds
 zero cases. A service whose bootstrap file failed to load answers every case
-request with a 404 while looking perfectly alive; a healthcheck that says `up`
-through that hides the outage it exists to catch. It stays 200 so Docker will
-not restart-loop a service that is merely empty. See the runbook.
+request with a 404 while looking perfectly alive.
+
+**HTTP status here is liveness, and the `status` field is readiness.** The
+process is genuinely alive and restarting it will not refill it — the fix is a
+restore, not a bounce — so a non-2xx would be the wrong signal. The consequence
+is that the Compose healthcheck, which only checks HTTP status, reports a
+degraded service as healthy. `./ops/run.sh health` is the check that reads the
+`status` field and exits non-zero on `degraded`; use that one when you need
+readiness. See the runbook.
 
 ---
 
@@ -212,8 +218,11 @@ all of it in one class, `CasePayloadNormalizer`:
   top-level keys in either convention
 - sections and fields that have never been seen before
 - a bare scalar (`"age": 63`) where a `{value, confidence, source}` envelope was
-  expected. It does **not** inherit the previous value's confidence or source —
-  attaching old provenance to a new value would misstate where it came from
+  expected. Confidence and source are then `null`, and are **never** borrowed
+  from the previous version — including when the value is unchanged. Provenance
+  travels with the extraction that reported it; taking a new confidence but
+  keeping the old page reference would present a `(confidence, source)` pair
+  that no single extraction ever produced
 - `"62"` and `62` are the same clinical value, not a conflict
 
 It rejects, with a `400` naming the exact path:
@@ -225,7 +234,8 @@ It rejects, with a `400` naming the exact path:
 - a `null` value — `missing_fields` is how an unreadable field is reported
 - a body `case_id` disagreeing with the URL
 
-Every violation in a payload is reported at once rather than one per round trip.
+Every violation in a payload is reported at once rather than one per round trip,
+capped at 25 so a wildly wrong payload cannot produce an enormous error body.
 **Validation completes before storage is touched**, so a rejected follow-up
 never leaves a partially merged case behind.
 
@@ -460,10 +470,13 @@ Three outcomes, and the middle one is the one that catches people:
 | `"status": "degraded"` | **Running but holds zero cases** | See below — this is an outage that looks fine |
 | No response | Not listening | Container down or wrong port |
 
-`degraded` is still HTTP 200 on purpose. Docker should not restart-loop a
-service that is merely empty, because restarting will not refill it — the fix is
-a restore, not a bounce. But it is not healthy either: every case request will
-404 while the process looks perfectly alive.
+`degraded` is still HTTP 200 on purpose: the process is alive, and restarting it
+will not refill it — the fix is a restore, not a bounce.
+
+**Know this trap:** the Compose healthcheck only checks HTTP status, so Docker
+reports a degraded service as `healthy`. `./ops/run.sh health` reads the
+`status` field and exits non-zero, which is why `start` uses it rather than
+trusting the container's own health state.
 
 ```json
 {
@@ -678,6 +691,24 @@ Stated plainly rather than discovered by a reviewer:
 
 - **Storage is in-memory and disappears on restart.** No database, per the
   brief. `ops/backup.sh` is the mitigation, not a substitute.
+- **Backups cover cases, not reviewer queries.** A restore brings the case data
+  back; any queries raised against it are gone. Queries would need their own
+  endpoint and their own place in the backup envelope, which is a schema change
+  I did not make inside the time budget.
+- **A restore replaces a case and discards its version history.** That is right
+  when recovering into an empty process, which is what `restore.sh` does. It
+  would be the wrong semantics for a general-purpose write endpoint, and
+  `PUT /cases/{id}` is documented as backup and restore only for that reason.
+- **Storage objects are shallowly immutable.** Stored `CaseView` instances hand
+  out their own maps and `JsonNode` values rather than defensive copies. No code
+  path mutates them and an HTTP client cannot reach them, so this is an
+  encapsulation weakness rather than a live defect — but it is the first thing I
+  would harden if this grew more writers.
+- **A retried follow-up reads as corroboration.** POST the same payload twice
+  and the second pass marks fields `unchanged`, which the UI presents as "a
+  second document confirmed this". Distinguishing a network retry from genuine
+  new evidence needs report identity or an idempotency key on the follow-up,
+  which the payload format does not currently carry.
 - **Version history is kept internally but not exposed.** A diff needs a
   well-defined predecessor, and immutable snapshots stop v1 being mutated while
   v2 is built. There is no history endpoint — the brief asks for the most recent

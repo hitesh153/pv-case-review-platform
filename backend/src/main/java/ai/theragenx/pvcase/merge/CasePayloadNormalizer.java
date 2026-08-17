@@ -35,6 +35,43 @@ public class CasePayloadNormalizer {
 
     private static final int MAX_VIOLATIONS_REPORTED = 25;
 
+    /** Closed set; see the violation message where this is used. */
+    static final List<String> ALLOWED_CLASSIFICATIONS =
+            List.of("significant", "non-significant");
+
+    private static final String NAME_RULE =
+            "section and field names must be non-blank and must not contain '.', '/' "
+                    + "or whitespace, because field paths are built as 'section.field'";
+
+    /**
+     * Field paths are the flat key the UI sorts by and {@code /queries} refers to,
+     * and they are built by joining a section and field name with a dot. A name
+     * containing a dot therefore makes the path ambiguous: section {@code a} with
+     * field {@code b.c} and section {@code a.b} with field {@code c} both produce
+     * {@code a.b.c}, and a {@code missing_fields} entry naming that path would flag
+     * both. Slashes and surrounding whitespace break the same way, since path
+     * resolution normalises both.
+     *
+     * <p>Rejecting the name is better than escaping it. Escaping would make every
+     * path in the API harder to read for a case of extraction output that has never
+     * been seen, and a precise 400 tells the pipeline owner exactly what to change.
+     */
+    private static boolean isUsableName(String name) {
+        if (name == null || name.isBlank()) {
+            return false;
+        }
+        if (!name.equals(name.trim())) {
+            return false;
+        }
+        for (int i = 0; i < name.length(); i++) {
+            char c = name.charAt(i);
+            if (c == '.' || c == '/' || Character.isWhitespace(c)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /**
      * @param root the parsed request body
      * @param requireSections true for a bootstrap/restore payload, false for a
@@ -58,6 +95,13 @@ public class CasePayloadNormalizer {
             if (!classificationNode.isTextual()) {
                 violations.add(new FieldViolation(
                         "case_classification", "must be a string or null"));
+            } else if (!ALLOWED_CLASSIFICATIONS.contains(classificationNode.asText())) {
+                // A closed set, because this drives a regulatory decision. Accepting
+                // a free-form string would let a typo like "signficant" through, and
+                // it would read as a valid classification to everything downstream.
+                violations.add(new FieldViolation("case_classification", String.format(
+                        "must be one of %s, or null; got '%s'",
+                        ALLOWED_CLASSIFICATIONS, classificationNode.asText())));
             } else {
                 caseClassification = classificationNode.asText();
             }
@@ -97,6 +141,17 @@ public class CasePayloadNormalizer {
             String sectionName = sectionEntry.getKey();
             JsonNode sectionNode = sectionEntry.getValue();
 
+            if (!isUsableName(sectionName)) {
+                violations.add(new FieldViolation("sections." + sectionName, NAME_RULE));
+                continue;
+            }
+            if ("sections".equals(sectionName)) {
+                violations.add(new FieldViolation("sections.sections",
+                        "'sections' is reserved as a section name because it collides "
+                                + "with the optional 'sections.' prefix on field paths"));
+                continue;
+            }
+
             if (!sectionNode.isObject()) {
                 violations.add(new FieldViolation(
                         "sections." + sectionName, "must be a JSON object of fields"));
@@ -107,10 +162,17 @@ public class CasePayloadNormalizer {
             Iterator<Map.Entry<String, JsonNode>> fieldEntries = sectionNode.fields();
             while (fieldEntries.hasNext()) {
                 Map.Entry<String, JsonNode> fieldEntry = fieldEntries.next();
-                String path = sectionName + "." + fieldEntry.getKey();
+                String fieldName = fieldEntry.getKey();
+                String path = sectionName + "." + fieldName;
+
+                if (!isUsableName(fieldName)) {
+                    violations.add(new FieldViolation(path, NAME_RULE));
+                    continue;
+                }
+
                 IncomingField field = readField(path, fieldEntry.getValue(), violations);
                 if (field != null) {
-                    fields.put(fieldEntry.getKey(), field);
+                    fields.put(fieldName, field);
                 }
             }
             target.put(sectionName, fields);
@@ -152,6 +214,15 @@ public class CasePayloadNormalizer {
         if (valueNode.isObject()) {
             violations.add(new FieldViolation(path + ".value",
                     "must be a scalar or array, not an object"));
+            return null;
+        }
+        if (valueNode.isTextual() && valueNode.asText().isBlank()) {
+            // A blank string is not a value; it is an extraction that found nothing
+            // dressed up as one. Accepting it would silently overwrite a real
+            // clinical value with whitespace.
+            violations.add(new FieldViolation(path + ".value",
+                    "is blank; report an unreadable field in 'missing_fields' rather "
+                            + "than sending an empty string"));
             return null;
         }
 

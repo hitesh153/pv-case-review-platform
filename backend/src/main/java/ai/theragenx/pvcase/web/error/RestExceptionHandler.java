@@ -6,6 +6,10 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import com.fasterxml.jackson.databind.JsonMappingException;
+import org.springframework.web.HttpMediaTypeNotAcceptableException;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -13,6 +17,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.servlet.NoHandlerFoundException;
 
 import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * Translates exceptions into the single {@link ApiError} envelope.
@@ -50,14 +55,64 @@ public class RestExceptionHandler {
                 .body(ApiError.of("INVALID_PAYLOAD", "Request payload is invalid", violations));
     }
 
-    /** Body was not parseable as JSON at all. */
+    /**
+     * Body could not be turned into the expected object.
+     *
+     * <p>Two distinct causes share this exception and deserve different messages:
+     * the bytes were not JSON at all, or they were valid JSON carrying a value the
+     * target type rejects — an unknown {@code status} in a restored snapshot, say.
+     * Telling an operator "malformed JSON" about a file that is perfectly well
+     * formed sends them looking for a syntax error that is not there.
+     */
     @ExceptionHandler(HttpMessageNotReadableException.class)
     public ResponseEntity<ApiError> handleUnreadableBody(HttpMessageNotReadableException e) {
         log.debug("Unreadable request body", e);
+
+        Throwable cause = e.getCause();
+        if (cause instanceof JsonMappingException mappingException) {
+            String path = mappingException.getPath().stream()
+                    .map(ref -> ref.getFieldName() != null
+                            ? ref.getFieldName()
+                            : "[" + ref.getIndex() + "]")
+                    .collect(Collectors.joining("."));
+            String detail = mappingException.getOriginalMessage();
+            return ResponseEntity.badRequest().body(ApiError.of(
+                    "INVALID_PAYLOAD",
+                    "Request body is valid JSON but could not be read into a case",
+                    List.of(new FieldViolation(path.isEmpty() ? "$" : path, detail))));
+        }
+
         return ResponseEntity.badRequest().body(ApiError.of(
                 "MALFORMED_JSON",
                 "Request body could not be parsed as JSON. Check for a trailing comma, "
                         + "an unquoted key, or a missing Content-Type: application/json header."));
+    }
+
+    /** Right path, wrong verb. 405 rather than the catch-all's 500. */
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<ApiError> handleMethodNotAllowed(
+            HttpRequestMethodNotSupportedException e) {
+        String supported = e.getSupportedHttpMethods() == null
+                ? "" : e.getSupportedHttpMethods().toString();
+        return ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED).body(ApiError.of(
+                "METHOD_NOT_ALLOWED",
+                "Method " + e.getMethod() + " is not supported here. Supported: " + supported));
+    }
+
+    /** Almost always a forgotten `-H 'Content-Type: application/json'`. */
+    @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
+    public ResponseEntity<ApiError> handleUnsupportedMediaType(
+            HttpMediaTypeNotSupportedException e) {
+        return ResponseEntity.status(HttpStatus.UNSUPPORTED_MEDIA_TYPE).body(ApiError.of(
+                "UNSUPPORTED_MEDIA_TYPE",
+                "Content-Type " + e.getContentType() + " is not supported. "
+                        + "Send application/json."));
+    }
+
+    @ExceptionHandler(HttpMediaTypeNotAcceptableException.class)
+    public ResponseEntity<ApiError> handleNotAcceptable(HttpMediaTypeNotAcceptableException e) {
+        return ResponseEntity.status(HttpStatus.NOT_ACCEPTABLE).body(ApiError.of(
+                "NOT_ACCEPTABLE", "This endpoint only produces application/json."));
     }
 
     @ExceptionHandler(MissingServletRequestParameterException.class)

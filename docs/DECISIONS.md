@@ -104,8 +104,9 @@ running service". With only `GET /cases/{caseId}` that is impossible — you can
 only fetch a case whose id you already knew, so "all known cases" would mean a
 hardcoded id, and a backup script that silently misses every case created after
 it was written is worse than no backup at all. `GET /cases` returns summaries;
-the backup script pages through and fetches each case in full, which keeps the
-list response small as case count grows.
+the backup script iterates them and fetches each case in full. There is no
+pagination — at this scale that would be speculative — so the index itself
+grows with case count.
 
 `ops/restore.sh` has the mirror problem. The only write path is
 `POST /cases/{id}/follow-ups`, and routing a restore through it is wrong twice
