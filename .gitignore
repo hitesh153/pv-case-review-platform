@@ -1,0 +1,28 @@
+# --- Java / Maven ---
+target/
+!.mvn/wrapper/maven-wrapper.jar
+!**/src/main/**/target/
+!**/src/test/**/target/
+*.class
+
+# --- Node / frontend ---
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.local
+
+# --- Operational output ---
+# Backups contain case data. Keep the directory shape, never the contents.
+backups/*
+!backups/.gitkeep
+
+# --- Editors / OS ---
+.DS_Store
+.idea/
+*.iml
+.vscode/
+*.swp
+
+# --- Logs ---
+*.log
