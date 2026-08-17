@@ -1,0 +1,31 @@
+{
+  "case_id": "PV-2026-0451",
+  "version": 1,
+  "case_classification": "non-significant",
+  "extracted_at": "2026-04-08T09:14:00Z",
+  "source_document": "initial_report_PV-2026-0451.pdf",
+  "sections": {
+    "patient": {
+      "initials": { "value": "M.K.", "confidence": 0.98, "source": "p.2 §1" },
+      "age": { "value": "62", "confidence": 0.91, "source": "p.2 §1" },
+      "sex": { "value": "Male", "confidence": 0.99, "source": "p.2 §1" },
+      "weight_kg": { "value": "78", "confidence": 0.85, "source": "p.3 §2" }
+    },
+    "suspect_drug": {
+      "drug_name": { "value": "Atorvastatin", "confidence": 0.97, "source": "p.3 §3" },
+      "dose": { "value": "20 mg", "confidence": 0.93, "source": "p.3 §3" },
+      "route": { "value": "Oral", "confidence": 0.96, "source": "p.3 §3" },
+      "indication": { "value": "Hypercholesterolemia", "confidence": 0.88, "source": "p.3 §4" }
+    },
+    "adverse_event": {
+      "event_term": { "value": "Myalgia", "confidence": 0.94, "source": "p.4 §1" },
+      "onset_date": { "value": "2026-03-12", "confidence": 0.72, "source": "p.4 §2" },
+      "outcome": { "value": "Recovered", "confidence": 0.81, "source": "p.5 §1" },
+      "seriousness": { "value": "Non-serious", "confidence": 0.79, "source": "p.5 §1" }
+    },
+    "reporter": {
+      "qualification": { "value": "Physician", "confidence": 0.95, "source": "p.1 §1" },
+      "country": { "value": "India", "confidence": 0.99, "source": "p.1 §1" }
+    }
+  }
+}
