@@ -50,6 +50,8 @@ readonly FAILURE_LOG_LINES=100
 
 LOG_TAIL="${DEFAULT_LOG_TAIL}"
 LOG_TAIL_GIVEN=0
+LOG_FOLLOW=1
+LOG_FOLLOW_GIVEN=0
 TIMEOUT_GIVEN=0
 SCRATCH_DIR=""
 
@@ -142,7 +144,9 @@ SUBCOMMANDS
   restart            stop, then start.
   test               Run the backend test suite via the Maven wrapper.
                      Requires a JDK; does NOT require Docker.
-  logs [--tail N]    Follow the service logs. Ctrl-C exits cleanly.
+  logs [options]     Follow the service logs. Ctrl-C exits cleanly.
+                     Use --no-follow to print and exit, which is what you want
+                     when piping to grep.
   health             One-shot health probe. Exits 0 only when status="up".
   clean              Remove this project's containers, networks, volumes and
                      locally built images. Scoped to '${COMPOSE_PROJECT}': it
@@ -158,6 +162,8 @@ OPTIONS
   --tail N           'logs' only. Lines of history before following.
                      N is a positive integer or the word 'all'.
                      Default: ${DEFAULT_LOG_TAIL}
+  --no-follow        'logs' only. Print the tail and exit instead of streaming.
+                     Required when piping to grep — the default would hang.
 
 EXAMPLES
   ${SCRIPT_NAME} build
@@ -165,6 +171,7 @@ EXAMPLES
   ${SCRIPT_NAME} start --timeout 240
   APP_PORT=9090 ${SCRIPT_NAME} start --base-url http://localhost:9090
   ${SCRIPT_NAME} logs --tail 200
+  ${SCRIPT_NAME} logs --no-follow --tail 200 | grep -i 'bootstrap file'
   ${SCRIPT_NAME} health && echo 'service is up'
   ${SCRIPT_NAME} test
   ${SCRIPT_NAME} clean
@@ -398,6 +405,18 @@ cmd_test() {
 cmd_logs() {
   require_docker
   local rc=0
+
+  # Without --no-follow this streams forever, which is right at a terminal and
+  # wrong in a pipeline: `run.sh logs | grep pattern` would hang rather than
+  # answer. Grepping the logs is exactly what the runbook asks an on-call
+  # engineer to do, so the non-following form has to exist.
+  if [ "${LOG_FOLLOW}" -eq 0 ]; then
+    log "reading last ${LOG_TAIL} log line(s) for '${COMPOSE_SERVICE}'"
+    compose logs --no-color --no-log-prefix --tail "${LOG_TAIL}" "${COMPOSE_SERVICE}" \
+      || die "'docker compose logs' failed"
+    return 0
+  fi
+
   log "following logs for '${COMPOSE_SERVICE}' (--tail ${LOG_TAIL}); Ctrl-C to stop"
   compose logs --no-color --follow --tail "${LOG_TAIL}" "${COMPOSE_SERVICE}" || rc=$?
   # 130 is SIGINT: pressing Ctrl-C is the normal way to stop following logs and
@@ -499,6 +518,16 @@ main() {
         TIMEOUT_GIVEN=1
         shift
         ;;
+      --no-follow)
+        LOG_FOLLOW=0
+        LOG_FOLLOW_GIVEN=1
+        shift
+        ;;
+      --follow)
+        LOG_FOLLOW=1
+        LOG_FOLLOW_GIVEN=1
+        shift
+        ;;
       --tail)
         require_value "$1" "$#"
         [ "$2" = 'all' ] || validate_positive_int "$1" "$2"
@@ -531,6 +560,9 @@ main() {
   # silently ignoring them.
   if [ "${LOG_TAIL_GIVEN}" -eq 1 ] && [ "${subcommand}" != 'logs' ]; then
     usage_error "--tail is only valid for the 'logs' subcommand"
+  fi
+  if [ "${LOG_FOLLOW_GIVEN}" -eq 1 ] && [ "${subcommand}" != 'logs' ]; then
+    usage_error "--follow/--no-follow is only valid for the 'logs' subcommand"
   fi
   if [ "${TIMEOUT_GIVEN}" -eq 1 ] \
      && [ "${subcommand}" != 'start' ] && [ "${subcommand}" != 'restart' ]; then

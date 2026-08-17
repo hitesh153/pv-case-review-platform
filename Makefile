@@ -32,10 +32,13 @@ OUTPUT_DIR ?=
 FILE       ?=
 DRY_RUN    ?=
 
-BASE_URL_ARG   := $(if $(BASE_URL),--base-url $(BASE_URL),)
-TIMEOUT_ARG    := $(if $(TIMEOUT),--timeout $(TIMEOUT),)
-TAIL_ARG       := $(if $(TAIL),--tail $(TAIL),)
-OUTPUT_DIR_ARG := $(if $(OUTPUT_DIR),--output-dir $(OUTPUT_DIR),)
+# Values are single-quoted so a variable containing a space reaches the script
+# as one argument. `make backup OUTPUT_DIR='/Volumes/My Backups'` would
+# otherwise word-split into two arguments and fail confusingly.
+BASE_URL_ARG   := $(if $(BASE_URL),--base-url '$(BASE_URL)',)
+TIMEOUT_ARG    := $(if $(TIMEOUT),--timeout '$(TIMEOUT)',)
+TAIL_ARG       := $(if $(TAIL),--tail '$(TAIL)',)
+OUTPUT_DIR_ARG := $(if $(OUTPUT_DIR),--output-dir '$(OUTPUT_DIR)',)
 DRY_RUN_ARG    := $(if $(DRY_RUN),--dry-run,)
 
 .DEFAULT_GOAL := help

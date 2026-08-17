@@ -381,6 +381,297 @@ Only a JDK 17+ is required.
 
 ---
 
+# Operations
+
+The runbook. Written for someone who did not build this and is reading it at
+2am. Every command below has been run against the real service; nothing here is
+described from memory.
+
+**The one thing to know first:** storage is in-memory. A restart loses every
+case and every query. `ops/backup.sh` is the only thing standing between a
+container restart and data loss, and `ops/restore.sh` is how you get it back.
+
+## Everything at a glance
+
+```bash
+./ops/run.sh --help          # works with Docker absent or stopped
+make                         # same commands via make
+
+./ops/run.sh build           # build the image
+./ops/run.sh start           # up, then block until /health says "up"
+./ops/run.sh health          # one-shot probe, exit 0 only when "up"
+./ops/run.sh logs --tail 200
+./ops/run.sh stop            # safe to run when already stopped
+./ops/run.sh clean           # this project only; never touches backups/
+./ops/run.sh test            # backend suite; needs a JDK, not Docker
+
+./ops/backup.sh                                  # -> prints the backup path
+./ops/restore.sh --dry-run backups/cases-….json  # writes nothing
+./ops/restore.sh backups/cases-….json
+```
+
+Exit codes are uniform: **0** success (including `--help`), **1** operational
+failure, **2** usage error.
+
+---
+
+## Build and deploy
+
+```bash
+./ops/run.sh build
+./ops/run.sh start
+```
+
+`start` does not return until `GET /health` reports `status: "up"` — not merely
+until the container exists. On a healthy machine this takes a few seconds:
+
+```
+INFO run.sh: waiting up to 120s for http://localhost:8080/health to report status="up"
+INFO run.sh: service is healthy after 2s (2 probe(s))
+INFO run.sh: started; API is available at http://localhost:8080
+```
+
+If it times out it prints the last 100 log lines and exits 1. It does not
+silently succeed.
+
+**Different port:** compose publishes `${APP_PORT}`, so both must move together.
+
+```bash
+APP_PORT=9090 ./ops/run.sh start --base-url http://localhost:9090
+```
+
+Setting only one is the most common false "start failed", so `start` warns when
+`APP_PORT` and `--base-url` disagree rather than letting you wait out the
+timeout.
+
+---
+
+## Verify it is healthy
+
+```bash
+curl -sS localhost:8080/health | jq
+```
+
+Three outcomes, and the middle one is the one that catches people:
+
+| Response | Meaning | Do |
+| --- | --- | --- |
+| `"status": "up"` | Healthy, cases loaded | Nothing |
+| `"status": "degraded"` | **Running but holds zero cases** | See below — this is an outage that looks fine |
+| No response | Not listening | Container down or wrong port |
+
+`degraded` is still HTTP 200 on purpose. Docker should not restart-loop a
+service that is merely empty, because restarting will not refill it — the fix is
+a restore, not a bounce. But it is not healthy either: every case request will
+404 while the process looks perfectly alive.
+
+```json
+{
+  "status": "degraded",
+  "cases_loaded": 0,
+  "detail": "Service is running but no cases are loaded. The bootstrap file was missing or unreadable; see startup logs and ops/restore.sh."
+}
+```
+
+A deeper check that exercises the real data path:
+
+```bash
+curl -sS localhost:8080/cases | jq '.count'
+```
+
+---
+
+## Back up
+
+```bash
+./ops/backup.sh
+```
+
+Writes `backups/cases-<UTC timestamp>-<pid>.json`, mode `0600` — **it contains
+patient case data**. Diagnostics go to stderr; the finished path is the only
+thing on stdout, so it composes:
+
+```bash
+path="$(./ops/backup.sh)" && gpg --encrypt -r ops@example.com "$path"
+```
+
+It assembles into a temp directory inside `backups/` and publishes with a single
+rename, so an interrupted run leaves nothing behind — you will never find a
+half-written file that parses as valid JSON. It exits non-zero and writes
+nothing if any single case fails to fetch, rather than producing a quietly
+incomplete backup.
+
+**Cron** (hourly, mail only on failure):
+
+```cron
+17 * * * * /path/to/repo/ops/backup.sh >/dev/null
+```
+
+No prompts, no TTY assumptions. Backups are gitignored.
+
+---
+
+## Restore
+
+**Always dry-run first.** It performs zero writes.
+
+```bash
+./ops/restore.sh --dry-run backups/cases-20260817T103333Z-47449.json
+```
+
+```
+INFO restore.sh: backup validated: 1 case(s), created_at=…, source=…
+INFO restore.sh: PV-2026-0451: would REPLACE (case exists)
+INFO restore.sh: dry-run summary (no writes performed): would-create=0 would-replace=1 unprobeable=0 of 1
+```
+
+Then for real:
+
+```bash
+./ops/restore.sh backups/cases-20260817T103333Z-47449.json
+```
+
+**Safe to re-run.** Restore is a `PUT` — it replaces rather than appends — so
+running the same file twice leaves byte-identical state and does not advance the
+version. If you are unsure whether a restore completed, run it again.
+
+The whole file is validated before the first write. A corrupt backup fails with
+the service untouched.
+
+---
+
+## Debugging a failed startup
+
+```bash
+./ops/run.sh logs --tail 100
+```
+
+Work down this list; it is ordered by how often each one is the answer.
+
+**1. Port already taken.** The usual cause.
+
+```bash
+lsof -i :8080
+```
+
+Something else bound to 8080 — very often a `./mvnw spring-boot:run` from
+earlier in the day. Kill it, or move the service with `APP_PORT` **and**
+`--base-url` together.
+
+**2. Service is up but has no cases** (`status: "degraded"`). The bootstrap file
+could not be read. Grep for it:
+
+```bash
+./ops/run.sh logs --no-follow --tail 200 2>&1 | grep -i 'bootstrap file'
+```
+
+```
+ERROR a.t.p.bootstrap.CaseBootstrapLoader : Bootstrap file classpath:does-not-exist.json
+not found. Service is up but has no cases; GET /cases will return an empty list.
+```
+
+Restarting will not help. Either fix `pvcase.bootstrap.location` and rebuild, or
+restore from a backup — which is faster and is usually what you want.
+
+**3. Container exits immediately.**
+
+```bash
+docker compose -p theragenx ps -a
+docker compose -p theragenx logs --no-color --tail 200 backend
+```
+
+A JVM that dies in under a second is almost always a bad `SERVER_PORT` or a
+malformed environment override.
+
+**4. Docker itself.** `run.sh` distinguishes these and tells you which:
+
+- `docker` missing from `PATH`
+- Compose v2 absent (the legacy `docker-compose` binary is not supported)
+- daemon unreachable — start Docker Desktop, or check socket permissions
+
+`--help` and `test` deliberately work regardless, so you can still run the test
+suite on a machine with no Docker at all.
+
+**5. Rule out the container entirely.** If it runs on the host but not in
+Docker, the problem is packaging, not code:
+
+```bash
+cd backend && ./mvnw spring-boot:run
+```
+
+---
+
+## Requests are failing — what to check first
+
+**Check in this order.** Steps 1–2 catch the large majority.
+
+**1. Is it actually up?**
+
+```bash
+./ops/run.sh health
+```
+
+Exits non-zero and states the reason: no response, wrong HTTP status, or
+`degraded`.
+
+**2. Every case request is a 404.** Look at `cases_loaded` in `/health`. If it
+is `0`, this is the `degraded` case above — the service is fine, the data is
+gone. Restore.
+
+**3. The browser says the backend is down but curl works.** This is CORS, not an
+outage. The reviewer UI's origin must be listed:
+
+```bash
+curl -sS -o /dev/null -D - -X OPTIONS localhost:8080/cases/PV-2026-0451 \
+  -H 'Origin: http://localhost:5173' -H 'Access-Control-Request-Method: GET' \
+  | grep -i access-control
+```
+
+No `Access-Control-Allow-Origin` in the response means the origin is not
+allowed — commonly because Vite fell back to a different port when 5173 was
+busy. Add it to `PVCASE_CORS_ALLOWED_ORIGINS` in `docker-compose.yml` and
+restart. **Do not set it to `*`.**
+
+**4. `400` on a follow-up.** The response names the exact path:
+
+```json
+{"code":"INVALID_PAYLOAD","errors":[{"path":"patient.age.confidence","message":"must be between 0 and 1 inclusive"}]}
+```
+
+Validation runs before storage is touched, so a rejected follow-up has not
+half-merged anything. The case is exactly as it was.
+
+**5. `409`/`500`, or anything unexplained.** The full stack trace is in the
+service log, never in the response:
+
+```bash
+./ops/run.sh logs --no-follow --tail 200 2>&1 | grep -A 30 'Unhandled exception'
+```
+
+**6. Merge produced something surprising.** Check `change_summary` and
+`compared_to_version` on the response. Remember `carried_forward` means the
+follow-up never mentioned that field — that is by design, not a bug. See
+`docs/DECISIONS.md` D3.
+
+---
+
+## Things that will surprise you
+
+- **`clean` removes the image**, so the next `start` needs a `build` first. It
+  is scoped to the `theragenx` compose project and never touches `backups/` or
+  any other project on the machine.
+- **The container filesystem is read-only** apart from a tmpfs `/tmp`. Anything
+  that tries to write to disk will fail — which is intended, since the service
+  has no reason to.
+- **Version numbers only go up**, except through a restore, which sets them to
+  whatever the backup held.
+- **`missing_fields` is per-version**, not cumulative. A field missing in v2 and
+  successfully read in v3 will not appear in v3's list.
+- **`backups/` is gitignored** apart from `.gitkeep`. Backups contain patient
+  data and must not be committed.
+
+---
+
 ## Scope and known limitations
 
 Stated plainly rather than discovered by a reviewer:
