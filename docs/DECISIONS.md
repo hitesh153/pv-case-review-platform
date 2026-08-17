@@ -91,3 +91,73 @@ explicit, audited correction operation, not an inference from absence.
 Comparison is on the clinical `value` only. A changed `confidence` or `source`
 with an identical value is `unchanged` — a re-scored extraction is not a
 clinical conflict for the reviewer to resolve.
+
+---
+
+## D4 — Two endpoints the brief's own requirements force
+
+**Decision.** Add `GET /cases` and `PUT /cases/{caseId}` beyond the five
+endpoints listed.
+
+**Why.** Phase 1B requires `ops/backup.sh` to "fetch all known cases from the
+running service". With only `GET /cases/{caseId}` that is impossible — you can
+only fetch a case whose id you already knew, so "all known cases" would mean a
+hardcoded id, and a backup script that silently misses every case created after
+it was written is worse than no backup at all. `GET /cases` returns summaries;
+the backup script pages through and fetches each case in full, which keeps the
+list response small as case count grows.
+
+`ops/restore.sh` has the mirror problem. The only write path is
+`POST /cases/{id}/follow-ups`, and routing a restore through it is wrong twice
+over: it appends a version on every run, so restoring the same file twice
+produces different state, and it cannot recreate a case that is absent
+entirely — which is precisely the situation a restore exists for.
+
+`PUT` rather than `POST` because the semantics genuinely are "make this case be
+exactly this snapshot". Idempotency then falls out of the verb rather than
+being bolted on: the second run overwrites with identical content instead of
+stacking another version. Verified by diffing the response after two
+consecutive restores.
+
+The general point: the operational requirements and the API surface were
+specified in separate sections of the brief and do not quite meet. Noticing
+that seam is most of the exercise.
+
+---
+
+## D5 — Container base: Temurin `jre-noble`, digest-pinned
+
+**Decision.** `eclipse-temurin:17.0.19_10-jre-noble` pinned by its
+multi-architecture index digest. Final image 441 MB.
+
+**Why not alpine, which would be roughly half the size.** I checked rather than
+assumed:
+
+```
+$ docker buildx imagetools inspect eclipse-temurin:17.0.19_10-jre-alpine
+  Platform: linux/amd64
+$ docker buildx imagetools inspect eclipse-temurin:17.0.19_10-jre-noble
+  Platform: linux/amd64, linux/arm64/v8, linux/arm/v7, ...
+$ uname -m
+arm64
+```
+
+Temurin publishes no arm64 alpine image. On this machine — an Apple Silicon Mac,
+which is also where the live demo runs — an alpine base would run under
+emulation or not at all. A smaller image that cannot start natively on the
+demo machine is not a smaller image, it is an outage. 441 MB is the honest cost
+of a JRE on a multi-arch base.
+
+Two further things verified rather than assumed:
+
+- **The digest is the top-level OCI index**, not a platform-specific manifest.
+  Pinning the arm64 digest from a local pull would break the build on CI.
+- **`curl` already exists at `/usr/bin/curl` in the JRE image.** The usual
+  advice is to `apt-get install curl` for the healthcheck; here that would be a
+  pointless layer. Checking mattered in the other direction too — a compose
+  healthcheck referencing a binary the image lacks fails every probe forever,
+  and reports the service as unhealthy when it is fine.
+
+Confirmed on the running container: `uid=10001(app)`, writes to `/app` rejected
+by the read-only root filesystem, healthy 6 seconds after start, and the merge
+endpoint returning correct annotations through the published port.

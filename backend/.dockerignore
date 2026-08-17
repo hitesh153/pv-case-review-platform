@@ -1,0 +1,21 @@
+# Keep the build context small and the cache stable. Anything listed here that
+# changed would otherwise invalidate the COPY layers for no reason.
+
+target/
+!target/.gitkeep
+
+.git/
+.gitignore
+.gitattributes
+
+*.md
+HELP.md
+
+.idea/
+*.iml
+.vscode/
+.DS_Store
+
+# Never ship real case data into a build context.
+backups/
+*.log

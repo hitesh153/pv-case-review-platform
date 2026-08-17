@@ -1,0 +1,61 @@
+# Compose project name is fixed rather than derived from the directory, so
+# `ops/run.sh clean` can scope itself to exactly this project and can never
+# reach another stack on the same machine.
+name: theragenx
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: theragenx/pv-case-service:local
+    container_name: theragenx-backend
+
+    ports:
+      # Host port is configurable; the container port is not. Keeps the
+      # healthcheck and the runbook honest when someone moves the host port to
+      # dodge a conflict.
+      - "${APP_PORT:-8080}:8080"
+
+    environment:
+      SERVER_PORT: 8080
+      # The reviewer UI's dev origins. Widen deliberately, never to "*".
+      PVCASE_CORS_ALLOWED_ORIGINS: "${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000}"
+      JAVA_TOOL_OPTIONS: "-XX:MaxRAMPercentage=75.0"
+
+    # curl is verified present in the Temurin JRE image, so no extra layer is
+    # needed. 127.0.0.1 rather than localhost avoids a needless IPv6 lookup.
+    # --fail makes a non-2xx an unhealthy result rather than a silent success.
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "--max-time", "3",
+             "http://127.0.0.1:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      # Generous, because a cold JVM start plus bootstrap load is slower than
+      # the steady-state interval. Too short here and Compose reports unhealthy
+      # on a service that was only still starting.
+      start_period: 40s
+
+    restart: unless-stopped
+    stop_grace_period: 15s
+
+    mem_limit: 512m
+
+    # The service writes nothing to disk — storage is in-memory by design — so
+    # the filesystem can be read-only. /tmp is still needed for Tomcat's work
+    # directory, mounted as a small tmpfs.
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
