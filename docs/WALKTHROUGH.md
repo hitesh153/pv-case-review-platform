@@ -198,6 +198,84 @@ across versions —
 
 ---
 
+## 4a. The ops scripts — what to say
+
+The brief warns against "Claude Code output you didn't read", so be ready to
+defend specifics rather than describe them generally.
+
+**The three things each script does that a naive version does not:**
+
+| Script | The detail worth naming |
+| --- | --- |
+| `run.sh` | `start` polls `GET /health` until `status` is `"up"`. "Container created" is not "service started" — a JVM takes seconds to boot after the container exists. |
+| `backup.sh` | Assembles into a temp dir *inside* `backups/` and publishes with one `mv`. Same filesystem, so it is a single `rename(2)`: readers see no file or the whole file, never a half-written one that parses. |
+| `restore.sh` | Validates the entire file before the first write. A corrupt backup fails with the service untouched, rather than half-restored. |
+
+**Two subtleties you can offer if pressed on the shell itself:**
+
+- *"`set -E` propagates the ERR trap into command substitutions, so
+  `x="$(curl …)" || rc=$?` fires the trap inside the substitution before the
+  `||` can suppress it — a bogus error line on every retry while waiting for a
+  JVM to boot. curl writes `%{http_code}` to a file instead, which keeps it in
+  the current shell where `|| rc=$?` actually works."*
+- *"`jq` streams concatenated JSON documents, so a file containing two objects
+  would make `.cases | length` emit two numbers and every downstream integer
+  test break on `2\n1`. Restore asserts exactly one document up front."*
+
+**The PHI point, which is easy to miss and good to raise unprompted:**
+
+> "Backups are `0600` with `umask` set before the first file is created, they're
+> gitignored, and the scripts log error *codes* only — never the message field,
+> because that can echo request content and case data must not end up in logs."
+
+**Honest limits:** `clean` removes the image, so the next `start` needs a
+`build`. And `--tail`/`--no-follow` exists because writing the runbook exposed
+that `run.sh logs | grep …` hung forever.
+
+---
+
+## 4b. The review pass — a strong story, tell it
+
+After the backend was complete and green at 44 tests, it went through an
+adversarial review specifically looking for defects. That found real bugs. This
+is worth volunteering, because "I had it working and then went looking for what
+was wrong with it" is the process claim the exercise is actually testing.
+
+**The best one to lead with, because it is a self-inflicted contradiction:**
+
+> "On an unchanged field I was taking the follow-up's confidence but falling
+> back to the previous version's source. So a follow-up saying `0.55` with no
+> page reference produced `(0.55, "p.2 §1")` — a reading no single extraction
+> ever emitted, shown to the reviewer as one coherent line. My own class
+> documentation said not to do exactly that. Provenance is now taken as a tuple,
+> nulls included."
+
+**The one with the sharpest failure mode:**
+
+> "`PUT /cases/{id}` bypasses the follow-up validator, so it accepted anything
+> Jackson could bind. A snapshot with no `version` bound to `0`, because the
+> record component is a primitive int. `version: 2147483647` was stored and
+> overflowed on the very next merge. A field with no `status` threw an NPE
+> inside the summary recomputation and surfaced as a 500 — to an operator
+> restoring a backup at 2am. There's a snapshot validator now, and fourteen
+> tests for it."
+
+**The one that shows domain thinking:**
+
+> "Section `a` with field `b.c` and section `a.b` with field `c` both produced
+> `field_path: "a.b.c"`, so a single `missing_fields` entry flagged both fields.
+> I rejected the names rather than escaping the paths — escaping would make
+> every path in the API harder to read to accommodate extraction output nobody
+> has ever seen."
+
+Test count went 44 → 72. If asked what the review changed about the *docs*: the
+health rationale was factually wrong — `restart: unless-stopped` does not
+restart a container for going unhealthy, so that could not have been the reason
+for returning 200. The honest framing is that HTTP status is liveness and the
+`status` field is readiness, which is why `run.sh health` checks the field.
+
+---
+
 ## 5. Questions you should expect
 
 **"Why no database?"** — Non-goal in the brief. In-memory, versioned. It's
