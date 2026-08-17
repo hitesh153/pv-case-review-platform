@@ -366,7 +366,7 @@ One envelope for every failure, so the UI writes one error renderer.
 
 ```bash
 cd backend
-./mvnw -B test          # 44 tests
+./mvnw -B test          # 72 tests
 ./mvnw spring-boot:run  # localhost:8080
 ```
 
@@ -384,10 +384,16 @@ Only a JDK 17+ is required.
 
 ### Test layout
 
-- `MergeServiceTest` — 24 tests on merge semantics and payload rejection, run
-  through the real normaliser so the parsing boundary is exercised too
-- `CaseApiTest` — 19 tests over HTTP: status codes, CORS preflight, restore
-  idempotency, and that a rejected request leaves storage untouched
+- `MergeServiceTest` — merge semantics and payload rejection, run through the
+  real normaliser so the parsing boundary is exercised too
+- `MergeHardeningTest` — regressions for defects found in an adversarial review
+  pass after the suite was already green: synthesised provenance, lexical
+  number comparison, ambiguous field paths
+- `CaseApiTest` — HTTP level: status codes, CORS preflight, and that a rejected
+  request leaves storage untouched
+- `RestoreApiTest` — the restore endpoint, which bypasses the follow-up
+  validator and so needs its own: version bounds, null status, field_path
+  agreement, status/previous_value invariants
 
 ---
 
