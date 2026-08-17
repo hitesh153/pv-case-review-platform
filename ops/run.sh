@@ -90,6 +90,13 @@ require_cmd() {
 # are all handled explicitly with `|| rc=$?` or `if ! ...`, which do not trip
 # the ERR trap.
 on_error() {
+  # `set -E` deliberately propagates this trap into functions AND into
+  # subshells, including command substitutions. That means a *handled* failure
+  # such as `x="$(cmd)" || fallback` would trip the trap inside the
+  # substitution before the `||` could suppress it, printing a bogus
+  # diagnostic. BASH_SUBSHELL is 0 only in the top-level shell (verified on
+  # bash 3.2 and 5.x), so reporting is limited to genuinely unhandled errors.
+  [ "${BASH_SUBSHELL:-0}" -eq 0 ] || return 0
   err "unexpected failure at ${SCRIPT_NAME}:${1} (exit ${2})"
 }
 trap 'on_error "${LINENO}" "$?"' ERR
@@ -221,22 +228,36 @@ compose() {
 #   2 -> nothing answered (connection refused, DNS, timeout)
 # HEALTH_REASON always explains the outcome.
 probe_health() {
-  local body_file err_file code status
+  local body_file err_file code_file code status rc=0
 
   body_file="$(scratch_file health.json)"
   err_file="$(scratch_file health.err)"
+  code_file="$(scratch_file health.code)"
   HEALTH_REASON=""
 
   # curl's exit status only tells us whether the request completed; the HTTP
   # status is captured separately via --write-out and checked explicitly.
-  if ! code="$(curl --silent --show-error \
-                    --connect-timeout "${CURL_CONNECT_TIMEOUT}" \
-                    --max-time "${CURL_MAX_TIME}" \
-                    --header 'Accept: application/json' \
-                    --output "${body_file}" \
-                    --write-out '%{http_code}' \
-                    -- "${BASE_URL}/health" 2>"${err_file}")"; then
-    HEALTH_REASON="no response from ${BASE_URL}/health ($(tr '\n' ' ' <"${err_file}"))"
+  #
+  # curl is run directly rather than inside a command substitution: `set -E`
+  # makes subshells inherit the ERR trap, so `code="$(curl ...)"` would fire
+  # the trap inside the substitution on every failed probe and spam the log
+  # while waiting for a JVM to boot.
+  curl --silent --show-error \
+       --connect-timeout "${CURL_CONNECT_TIMEOUT}" \
+       --max-time "${CURL_MAX_TIME}" \
+       --header 'Accept: application/json' \
+       --output "${body_file}" \
+       --write-out '%{http_code}' \
+       -- "${BASE_URL}/health" >"${code_file}" 2>"${err_file}" || rc=$?
+
+  if [ "${rc}" -ne 0 ]; then
+    HEALTH_REASON="no response from ${BASE_URL}/health ($(tr '\n' ' ' <"${err_file}" || true))"
+    return 2
+  fi
+
+  code="$(cat -- "${code_file}" 2>/dev/null || true)"
+  if [ -z "${code}" ]; then
+    HEALTH_REASON="curl reported success but returned no HTTP status code for ${BASE_URL}/health"
     return 2
   fi
 
@@ -333,6 +354,15 @@ cmd_build() {
 cmd_start() {
   require_docker
   require_cmd curl jq
+
+  # Cheap guard against the most common false "start failed": compose publishes
+  # ${APP_PORT} on the host while the health probe still points at 8080.
+  if [ -n "${APP_PORT:-}" ] && [ "${APP_PORT}" != '8080' ] \
+     && [ "${BASE_URL}" = 'http://localhost:8080' ]; then
+    warn "APP_PORT=${APP_PORT} but the health probe targets ${BASE_URL}"
+    warn "pass --base-url http://localhost:${APP_PORT} (or set BASE_URL) or 'start' will time out"
+  fi
+
   log "starting project '${COMPOSE_PROJECT}'"
   # --remove-orphans keeps repeated starts from accumulating containers left
   # behind by an older compose file. Starting an already-running stack is a
@@ -414,6 +444,7 @@ validate_positive_int() {
   # validate_positive_int <flag> <value>
   case "$2" in
     '' | *[!0-9]*) usage_error "option '$1' expects a positive integer, got '$2'" ;;
+    *)             : ;;  # all digits: fall through to the range check below
   esac
   [ "$2" -gt 0 ] || usage_error "option '$1' expects a positive integer, got '$2'"
 }
@@ -433,6 +464,8 @@ main() {
       usage >&2
       exit "${EXIT_USAGE}"
       ;;
+    *)
+      : ;;  # a real subcommand; validated in the dispatch case below
   esac
 
   subcommand="$1"

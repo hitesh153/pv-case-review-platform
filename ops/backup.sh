@@ -79,6 +79,13 @@ require_cmd() {
 }
 
 on_error() {
+  # `set -E` deliberately propagates this trap into functions AND into
+  # subshells, including command substitutions. That means a *handled* failure
+  # such as `x="$(cmd)" || fallback` would trip the trap inside the
+  # substitution before the `||` could suppress it, printing a bogus
+  # diagnostic. BASH_SUBSHELL is 0 only in the top-level shell (verified on
+  # bash 3.2 and 5.x), so reporting is limited to genuinely unhandled errors.
+  [ "${BASH_SUBSHELL:-0}" -eq 0 ] || return 0
   err "unexpected failure at ${SCRIPT_NAME}:${1} (exit ${2})"
 }
 trap 'on_error "${LINENO}" "$?"' ERR
@@ -157,26 +164,33 @@ EOF
 # a response arrived, not that it was a good one.
 http_get_json() {
   local url="$1" dest="$2" what="$3"
-  local attempt=0 rc code delay err_file api_code
+  local attempt=0 rc code delay err_file code_file api_code
   err_file="${WORK_DIR}/curl.err"
+  code_file="${WORK_DIR}/curl.code"
 
   while :; do
     attempt=$((attempt + 1))
     rc=0
-    code="$(curl --silent --show-error \
-                 --connect-timeout "${CURL_CONNECT_TIMEOUT}" \
-                 --max-time "${CURL_MAX_TIME}" \
-                 --header 'Accept: application/json' \
-                 --output "${dest}" \
-                 --write-out '%{http_code}' \
-                 -- "${url}" 2>"${err_file}")" || rc=$?
+    # curl is run directly, not inside a command substitution. `set -E` makes
+    # subshells inherit the ERR trap, so `code="$(curl ...)" || rc=$?` would
+    # fire the trap *inside* the substitution before the `||` could suppress
+    # it — producing a bogus "unexpected failure" line on every retry. Writing
+    # %{http_code} to a file keeps curl in this shell where `|| rc=$?` works.
+    curl --silent --show-error \
+         --connect-timeout "${CURL_CONNECT_TIMEOUT}" \
+         --max-time "${CURL_MAX_TIME}" \
+         --header 'Accept: application/json' \
+         --output "${dest}" \
+         --write-out '%{http_code}' \
+         -- "${url}" >"${code_file}" 2>"${err_file}" || rc=$?
+    code="$(cat -- "${code_file}" 2>/dev/null || true)"
 
     if [ "${rc}" -eq 0 ] && [ "${code}" = '200' ]; then
       return 0
     fi
 
     if [ "${rc}" -ne 0 ]; then
-      err "${what}: request failed ($(tr '\n' ' ' <"${err_file}"))"
+      err "${what}: request failed ($(tr '\n' ' ' <"${err_file}" || true))"
     else
       # Only the machine-readable error code is logged. The message field can
       # echo request content, and this script must not put case data in logs.
@@ -263,6 +277,13 @@ main() {
 
   mkdir -p -- "${OUTPUT_DIR}" || die "could not create output directory: ${OUTPUT_DIR}"
   [ -w "${OUTPUT_DIR}" ] || die "output directory is not writable: ${OUTPUT_DIR}"
+
+  # Resolve to an absolute path before it is used to build the emitted filename.
+  # --output-dir may be relative, and the help promises stdout is an absolute
+  # path — a cron job that consumes that path runs from a different working
+  # directory than whoever wrote the crontab entry.
+  OUTPUT_DIR="$(cd -- "${OUTPUT_DIR}" >/dev/null 2>&1 && pwd -P)" \
+    || die "could not resolve output directory to an absolute path: ${OUTPUT_DIR}"
 
   # The work directory lives inside the output directory so the final `mv` is a
   # same-filesystem rename(2) — atomic. `mktemp -p` is GNU-only; the template
