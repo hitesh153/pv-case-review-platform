@@ -58,11 +58,15 @@ public class RestExceptionHandler {
     /**
      * Body could not be turned into the expected object.
      *
-     * <p>Two distinct causes share this exception and deserve different messages:
-     * the bytes were not JSON at all, or they were valid JSON carrying a value the
-     * target type rejects — an unknown {@code status} in a restored snapshot, say.
-     * Telling an operator "malformed JSON" about a file that is perfectly well
-     * formed sends them looking for a syntax error that is not there.
+     * <p>Two cases, and they need different messages. When Jackson knows which
+     * property it was reading, that location is far more useful than any sentence
+     * this handler could write, so it is reported and the message stays neutral.
+     * When it does not, the caller gets the checklist of usual suspects instead.
+     *
+     * <p>The message is deliberately endpoint-agnostic. This advice serves cases,
+     * queries and restores alike, so wording it around any one of them would be
+     * wrong everywhere else — as it was when it said "could not be read into a
+     * case" in response to a malformed query.
      */
     @ExceptionHandler(HttpMessageNotReadableException.class)
     public ResponseEntity<ApiError> handleUnreadableBody(HttpMessageNotReadableException e) {
@@ -78,7 +82,7 @@ public class RestExceptionHandler {
             String detail = mappingException.getOriginalMessage();
             return ResponseEntity.badRequest().body(ApiError.of(
                     "INVALID_PAYLOAD",
-                    "Request body is valid JSON but could not be read into a case",
+                    "Request body could not be read. See errors for the exact location.",
                     List.of(new FieldViolation(path.isEmpty() ? "$" : path, detail))));
         }
 
