@@ -1,0 +1,5 @@
+{
+  "caseId": "PV-2026-0451",
+  "fieldPath": "adverse_event.seriousness",
+  "question": "The follow-up upgrades seriousness to Serious, but the narrative on p.3 still reads as non-serious. Please confirm before submission."
+}

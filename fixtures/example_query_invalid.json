@@ -1,0 +1,5 @@
+{
+  "caseId": "PV-2026-0451",
+  "fieldPath": "patient.blood_type",
+  "question": "Demonstrates rejection: this field does not exist on the case."
+}
