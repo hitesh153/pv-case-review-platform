@@ -251,6 +251,36 @@ class MergeHardeningTest {
         }
 
         @Test
+        @DisplayName("a payload with nothing recognisable is refused, not treated as a no-op")
+        void unrecognisablePayloadIsRejected() {
+            // Previously returned 200 and appended a version recording nothing, which
+            // tells a caller their submission landed when it was discarded entirely.
+            assertThatThrownBy(() -> followUp("{\"patient_data\": {\"age\": 63}, \"drug\": \"X\"}"))
+                    .isInstanceOf(InvalidPayloadException.class)
+                    .satisfies(e -> assertThat(((InvalidPayloadException) e).violations())
+                            .anySatisfy(v -> assertThat(v.message())
+                                    .contains("no recognised case data")));
+        }
+
+        @Test
+        @DisplayName("unknown keys alongside recognised ones are still tolerated")
+        void unknownKeysBesideRecognisedOnesAreFine() {
+            // An extraction pipeline attaching its own run metadata must not be
+            // punished for it.
+            assertThatCode(() -> followUp(
+                    "{\"pipeline_run_id\": \"abc-123\", \"reviewer\": \"someone\","
+                            + " \"sections\": {\"patient\": {\"age\": {\"value\": \"63\"}}}}"))
+                    .doesNotThrowAnyException();
+        }
+
+        @Test
+        @DisplayName("a classification-only follow-up is still legitimate")
+        void classificationOnlyPayloadIsAccepted() {
+            assertThatCode(() -> followUp("{\"case_classification\": \"significant\"}"))
+                    .doesNotThrowAnyException();
+        }
+
+        @Test
         @DisplayName("both permitted classifications and explicit null still work")
         void validClassificationsAreAccepted() {
             assertThat(mergeService.merge(caseV1, followUp("""

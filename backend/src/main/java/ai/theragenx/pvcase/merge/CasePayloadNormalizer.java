@@ -39,6 +39,26 @@ public class CasePayloadNormalizer {
     static final List<String> ALLOWED_CLASSIFICATIONS =
             List.of("significant", "non-significant");
 
+    /**
+     * Top-level keys this service understands. Extra keys alongside them are
+     * tolerated — an extraction pipeline may legitimately attach its own metadata,
+     * and rejecting a payload for carrying a run id would be hostile. But a payload
+     * containing *none* of these is not a follow-up at all.
+     */
+    private static final List<String> RECOGNISED_KEYS = List.of(
+            "sections", "case_classification", "caseClassification",
+            "missing_fields", "missingFields", "case_id", "caseId",
+            "extracted_at", "extractedAt", "source_document", "sourceDocument");
+
+    private static boolean hasRecognisableContent(JsonNode root) {
+        for (String key : RECOGNISED_KEYS) {
+            if (root.has(key)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static final String NAME_RULE =
             "section and field names must be non-blank and must not contain '.', '/' "
                     + "or whitespace, because field paths are built as 'section.field'";
@@ -119,6 +139,19 @@ public class CasePayloadNormalizer {
             violations.add(new FieldViolation("sections", "must be a JSON object"));
         } else {
             readSections(sectionsNode, sections, violations);
+        }
+
+        // A payload in which nothing at all was recognised is refused rather than
+        // treated as a no-op follow-up. Accepting it returns 200, appends a version
+        // that records nothing, and tells the caller their submission landed — so
+        // if the extraction pipeline ever changes its output format, every follow-up
+        // "succeeds" while importing nothing. Silently discarding submitted safety
+        // data is the worst available outcome; a 400 naming the keys we understand
+        // is the cheapest possible fix.
+        if (!hasRecognisableContent(root)) {
+            violations.add(new FieldViolation("$", String.format(
+                    "no recognised case data; expected at least one of %s",
+                    String.join(", ", RECOGNISED_KEYS))));
         }
 
         if (!violations.isEmpty()) {
